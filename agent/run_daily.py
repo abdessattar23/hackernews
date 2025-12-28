@@ -5,7 +5,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -29,6 +29,10 @@ def _configure_logging() -> None:
         stream=sys.stdout,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+
+    if level > logging.DEBUG:
+        for noisy in ("httpx", "httpcore", "botocore", "boto3", "s3transfer", "urllib3"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def _slugify(value: str) -> str:
@@ -90,7 +94,7 @@ async def run_once() -> int:
     ai = HackClubAIClient(base_url=cfg.ai_base_url, api_key=cfg.ai_api_key)
 
     processed = 0
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     base_out = Path(cfg.output_dir) / today
 
     try:

@@ -1,15 +1,21 @@
+import asyncio
 import base64
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
 
+logger = logging.getLogger("hn_agent.ai")
+
+
 class HackClubAIClient:
-    def __init__(self, base_url: str, api_key: str, timeout_seconds: float = 90.0) -> None:
+    def __init__(self, base_url: str, api_key: str, timeout_seconds: float = 240.0, max_retries: int = 3) -> None:
         self._base_url = base_url
         self._api_key = api_key
+        self._max_retries = max_retries
         self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_seconds, connect=10.0),
+            timeout=httpx.Timeout(timeout_seconds, connect=20.0),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -20,9 +26,35 @@ class HackClubAIClient:
         await self._client.aclose()
 
     async def chat(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        r = await self._client.post(self._base_url, json=payload)
-        r.raise_for_status()
-        return r.json()
+        last_exc: Optional[BaseException] = None
+
+        for attempt in range(self._max_retries + 1):
+            try:
+                r = await self._client.post(self._base_url, json=payload)
+                r.raise_for_status()
+                return r.json()
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code if e.response is not None else None
+                if status == 429 or (isinstance(status, int) and 500 <= status < 600):
+                    last_exc = e
+                else:
+                    raise
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                last_exc = e
+
+            if attempt >= self._max_retries:
+                assert last_exc is not None
+                raise last_exc
+
+            wait_s = min(2 ** attempt, 30)
+            logger.warning(
+                "ai_retry attempt=%s/%s wait_s=%s error=%s",
+                attempt + 1,
+                self._max_retries,
+                wait_s,
+                type(last_exc).__name__ if last_exc else "unknown",
+            )
+            await asyncio.sleep(wait_s)
 
     @staticmethod
     def _extract_text(resp: Dict[str, Any]) -> str:
