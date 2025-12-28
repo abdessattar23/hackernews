@@ -21,14 +21,52 @@ from agent import thn
 logger = logging.getLogger("hn_agent")
 
 
+class _ColorFormatter(logging.Formatter):
+    _RESET = "\x1b[0m"
+    _COLORS = {
+        "DEBUG": "\x1b[90m",
+        "INFO": "\x1b[36m",
+        "WARNING": "\x1b[33m",
+        "ERROR": "\x1b[31m",
+        "CRITICAL": "\x1b[41m\x1b[97m",
+    }
+
+    def __init__(self, *, use_color: bool) -> None:
+        super().__init__(fmt="%(asctime)s %(levelname)s %(name)s %(message)s")
+        self._use_color = use_color
+
+    def format(self, record: logging.LogRecord) -> str:
+        if not self._use_color:
+            return super().format(record)
+
+        original_levelname = record.levelname
+        try:
+            color = self._COLORS.get(original_levelname)
+            if color:
+                record.levelname = f"{color}{original_levelname}{self._RESET}"
+            return super().format(record)
+        finally:
+            record.levelname = original_levelname
+
+
+def _should_use_colors() -> bool:
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if (os.environ.get("LOG_COLORS") or "").strip() in {"0", "false", "False", "no", "NO"}:
+        return False
+    term = (os.environ.get("TERM") or "").lower()
+    if term == "dumb":
+        return False
+    return bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+
 def _configure_logging() -> None:
     level_name = (os.environ.get("LOG_LEVEL") or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        level=level,
-        stream=sys.stdout,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(_ColorFormatter(use_color=_should_use_colors()))
+    logging.basicConfig(level=level, handlers=[handler], force=True)
 
     if level > logging.DEBUG:
         for noisy in ("httpx", "httpcore", "botocore", "boto3", "s3transfer", "urllib3"):
@@ -99,6 +137,7 @@ async def run_once() -> int:
 
     try:
         t0 = time.monotonic()
+        logger.info("running fetch_listing")
         listing_html = await thn.fetch_listing_html(http)
         listing = thn.parse_listing(listing_html)
         candidates = thn.pick_candidates(listing, cfg.max_items)
@@ -126,14 +165,18 @@ async def run_once() -> int:
             try:
                 item_t0 = time.monotonic()
                 logger.info("process_start url=%s slug=%s", url, slug)
+
+                logger.info("running fetch_source url=%s", url)
                 source = await _fetch_source_bundle(http, item)
                 _write_text(out_dir / "source.json", json.dumps(source, ensure_ascii=False, indent=2))
                 logger.info("source_fetched url=%s", url)
 
+                logger.info("running generate_blog model=%s", cfg.blog_model)
                 blog_en = await ai.generate_blog_markdown(cfg.blog_model, source)
                 _write_text(out_dir / "blog_en.md", blog_en)
                 logger.info("blog_generated url=%s chars=%s", url, len(blog_en))
 
+                logger.info("running translate_darija model=%s", cfg.darija_model)
                 blog_darija = await ai.translate_to_darija(cfg.darija_model, blog_en)
                 _write_text(out_dir / "blog_darija.md", blog_darija)
                 logger.info("darija_translated url=%s chars=%s", url, len(blog_darija))
@@ -144,6 +187,7 @@ async def run_once() -> int:
                     f"DARJA_POST:\n{blog_darija[:4000]}\n"
                 )
 
+                logger.info("running generate_illustration model=%s", cfg.image_model)
                 image_bytes, image_caption = await ai.generate_illustration(cfg.image_model, img_prompt, aspect_ratio="16:9")
                 if image_bytes:
                     _write_bytes(out_dir / "illustration.png", image_bytes)
@@ -164,6 +208,7 @@ async def run_once() -> int:
                 _write_text(out_dir / "meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
 
                 s3_prefix = f"{today}/{slug}"
+                logger.info("running s3_upload prefix=%s", s3_prefix)
                 k1 = store.put_text(
                     f"{s3_prefix}/source.json",
                     (out_dir / "source.json").read_text(encoding="utf-8"),

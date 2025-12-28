@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,14 +26,50 @@ class HackClubAIClient:
     async def close(self) -> None:
         await self._client.aclose()
 
+    @staticmethod
+    def _preview(text: str, limit: int = 300) -> str:
+        t = (text or "").replace("\r", " ").replace("\n", " ").strip()
+        if len(t) <= limit:
+            return t
+        return t[:limit] + "..."
+
     async def chat(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         last_exc: Optional[BaseException] = None
 
         for attempt in range(self._max_retries + 1):
             try:
+                model = payload.get("model")
+                logger.info("running ai_request model=%s", model)
                 r = await self._client.post(self._base_url, json=payload)
-                r.raise_for_status()
-                return r.json()
+                status = r.status_code
+
+                body_text = ""
+                try:
+                    data = r.json()
+                except Exception:
+                    data = None
+                    body_text = (r.text or "")
+
+                if status >= 400:
+                    if not body_text:
+                        try:
+                            body_text = json.dumps(data, ensure_ascii=False)
+                        except Exception:
+                            body_text = ""
+                    logger.error(
+                        "response status: %s, message: %s",
+                        status,
+                        self._preview(body_text, 800),
+                    )
+                    r.raise_for_status()
+
+                if isinstance(data, dict):
+                    msg = self._extract_text(data)
+                    logger.info("response status: %s, message: %s", status, self._preview(msg))
+                    return data
+
+                logger.info("response status: %s, message: %s", status, self._preview(body_text))
+                return {}
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code if e.response is not None else None
                 if status == 429 or (isinstance(status, int) and 500 <= status < 600):
