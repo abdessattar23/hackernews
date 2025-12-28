@@ -180,6 +180,24 @@ class HackClubAIClient:
             return None
 
         msg = (choices[0] or {}).get("message") or {}
+
+        images = msg.get("images")
+        if isinstance(images, list):
+            for p in images:
+                if not isinstance(p, dict):
+                    continue
+
+                image_url = p.get("image_url") if isinstance(p.get("image_url"), dict) else None
+                url = (image_url or {}).get("url")
+                if isinstance(url, str) and url.startswith("data:"):
+                    return self._decode_data_url(url)
+
+                if p.get("type") == "image" and isinstance(p.get("data"), str):
+                    try:
+                        return base64.b64decode(p["data"], validate=True)
+                    except Exception:
+                        return None
+
         content = msg.get("content")
         if not isinstance(content, list):
             return None
@@ -208,6 +226,17 @@ class HackClubAIClient:
             return None
 
         msg = (choices[0] or {}).get("message") or {}
+
+        images = msg.get("images")
+        if isinstance(images, list):
+            for p in images:
+                if not isinstance(p, dict):
+                    continue
+                image_url = p.get("image_url") if isinstance(p.get("image_url"), dict) else None
+                url = (image_url or {}).get("url")
+                if isinstance(url, str) and (url.startswith("https://") or url.startswith("http://")):
+                    return url
+
         content = msg.get("content")
         if not isinstance(content, list):
             return None
