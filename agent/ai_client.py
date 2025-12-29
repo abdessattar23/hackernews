@@ -112,6 +112,13 @@ class HackClubAIClient:
                 return "\n".join(parts).strip()
         return ""
 
+    @staticmethod
+    def _count_arabic_and_latin_letters(text: str) -> Tuple[int, int]:
+        t = text or ""
+        arabic = re.findall(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]", t)
+        latin = re.findall(r"[A-Za-z]", t)
+        return len(arabic), len(latin)
+
     async def generate_blog_markdown(self, model: str, source: Dict[str, Any]) -> str:
         title = source.get("title") or ""
         url = source.get("url") or ""
@@ -215,7 +222,8 @@ class HackClubAIClient:
             "- The post body should tease value and invite discussion.\n"
             "- The first_comment must contain the link first on its own line, then the brand on a new line.\n"
             "- Keep it human, punchy, and readable on LinkedIn.\n\n"
-            "- When writing in Darija, use Arabic Letters.\n\n"
+            "- When writing in Darija, use Arabic letters (حروف عربية). Example: كاينة واحد الثغرة...\n"
+            "- Do NOT write Darija using Latin transliteration (Darija latine). Latin letters are allowed only for the short English part and for technical terms (CVE, MongoDB, npm, etc.).\n\n"
             "Return ONLY valid JSON with keys:\n"
             "chosen_template_number (int), post_text (string), first_comment (string), hashtags (array of strings).\n\n"
             f"CHOSEN_TEMPLATE_NUMBER: {template_number}\n\n"
@@ -233,7 +241,55 @@ class HackClubAIClient:
             }
         )
         text = self._extract_text(resp)
-        return self._extract_json_from_text(text)
+        draft = self._extract_json_from_text(text)
+
+        post_text = str(draft.get("post_text") or "").strip()
+        if post_text:
+            arabic_count, latin_count = self._count_arabic_and_latin_letters(post_text)
+            total = arabic_count + latin_count
+            arabic_ratio = (arabic_count / total) if total else 0.0
+
+            # Heuristic: if the post is mostly Latin letters and has very few Arabic letters,
+            # it likely used Darija in Latin transliteration.
+            needs_rewrite = (latin_count >= 40) and (arabic_count < 12) and (arabic_ratio < 0.25)
+
+            if needs_rewrite:
+                logger.warning(
+                    "linkedin_draft_arabic_script_missing arabic_letters=%s latin_letters=%s attempting_rewrite=1",
+                    arabic_count,
+                    latin_count,
+                )
+
+                rewrite_prompt = (
+                    "Rewrite the following LinkedIn post so that the Moroccan Arabic Darija parts are written in Arabic script (حروف عربية). "
+                    "Keep the short English part in English. Keep the meaning the same. Do not add new facts.\n\n"
+                    "Rules:\n"
+                    "- Do NOT include any URL in the post body.\n"
+                    "- Do NOT write Darija in Latin transliteration.\n"
+                    "Return ONLY valid JSON with key: post_text (string).\n\n"
+                    f"POST_TEXT:\n{post_text}\n"
+                )
+
+                rewrite_resp = await self.chat(
+                    {
+                        "model": model,
+                        "messages": [{"role": "user", "content": rewrite_prompt}],
+                    }
+                )
+                rewrite_text = self._extract_text(rewrite_resp)
+                rewrite_obj = self._extract_json_from_text(rewrite_text)
+                rewritten = str(rewrite_obj.get("post_text") or "").strip()
+                if rewritten:
+                    rw_arabic, rw_latin = self._count_arabic_and_latin_letters(rewritten)
+                    if rw_arabic > arabic_count:
+                        draft["post_text"] = rewritten
+                        logger.info(
+                            "linkedin_draft_rewrite_done arabic_letters=%s latin_letters=%s",
+                            rw_arabic,
+                            rw_latin,
+                        )
+
+        return draft
 
     async def translate_to_darija(self, model: str, markdown: str) -> str:
         prompt = (
