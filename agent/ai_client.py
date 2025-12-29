@@ -209,12 +209,13 @@ class HackClubAIClient:
     ) -> Dict[str, Any]:
         prompt = (
             "You write high-performing LinkedIn posts for Moroccan tech/cybersecurity. "
-            "Generate ONE bilingual LinkedIn post (primary Darija, short English secondary) based on the blog.\n\n"
+            "Generate ONE bilingual LinkedIn post (primary Arabic Darija, short English secondary) based on the blog.\n\n"
             "Rules:\n"
             "- Do NOT include the URL in the post body. Put it in first_comment only.\n"
             "- The post body should tease value and invite discussion.\n"
             "- The first_comment must contain the link first on its own line, then the brand on a new line.\n"
             "- Keep it human, punchy, and readable on LinkedIn.\n\n"
+            "- When writing in Darija, use Arabic Letters.\n\n"
             "Return ONLY valid JSON with keys:\n"
             "chosen_template_number (int), post_text (string), first_comment (string), hashtags (array of strings).\n\n"
             f"CHOSEN_TEMPLATE_NUMBER: {template_number}\n\n"
