@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -138,6 +139,100 @@ class HackClubAIClient:
             }
         )
         return self._extract_text(resp).strip()
+
+    @staticmethod
+    def _extract_json_from_text(text: str) -> Dict[str, Any]:
+        raw = (text or "").strip()
+        if not raw:
+            return {}
+
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+        m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        if not m:
+            return {}
+        try:
+            obj = json.loads(m.group(0))
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+
+    async def pick_best_article_for_linkedin(self, model: str, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        prompt = (
+            "You are a LinkedIn editor for a Moroccan tech/cybersecurity audience. "
+            "Pick the single best article to post today for maximum engagement and usefulness.\n\n"
+            "Return ONLY valid JSON with keys: selected_index (0-based integer), reason_short (string).\n\n"
+            f"CANDIDATES_JSON:\n{json.dumps(candidates, ensure_ascii=False)}\n"
+        )
+
+        resp = await self.chat(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        )
+        text = self._extract_text(resp)
+        return self._extract_json_from_text(text)
+
+    async def pick_linkedin_template(self, model: str, blog_text: str, templates_text: str) -> Dict[str, Any]:
+        prompt = (
+            "You are a LinkedIn copy chief. Select the best template from the provided list for the blog below. "
+            "Prefer Darija-first bilingual output.\n\n"
+            "Return ONLY valid JSON with keys: template_number (integer 1-9), template_name (string), reason_short (string).\n\n"
+            f"TEMPLATES:\n{templates_text}\n\n"
+            f"BLOG_TEXT:\n{blog_text[:6000]}\n"
+        )
+
+        resp = await self.chat(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        )
+        text = self._extract_text(resp)
+        return self._extract_json_from_text(text)
+
+    async def generate_linkedin_draft(
+        self,
+        model: str,
+        blog_darija: str,
+        blog_en: str,
+        template_number: int,
+        templates_text: str,
+        link_url: str,
+        brand: str,
+    ) -> Dict[str, Any]:
+        prompt = (
+            "You write high-performing LinkedIn posts for Moroccan tech/cybersecurity. "
+            "Generate ONE bilingual LinkedIn post (primary Darija, short English secondary) based on the blog.\n\n"
+            "Rules:\n"
+            "- Do NOT include the URL in the post body. Put it in first_comment only.\n"
+            "- The post body should tease value and invite discussion.\n"
+            "- The first_comment must contain the link first on its own line, then the brand on a new line.\n"
+            "- Keep it human, punchy, and readable on LinkedIn.\n\n"
+            "Return ONLY valid JSON with keys:\n"
+            "chosen_template_number (int), post_text (string), first_comment (string), hashtags (array of strings).\n\n"
+            f"CHOSEN_TEMPLATE_NUMBER: {template_number}\n\n"
+            f"TEMPLATES:\n{templates_text}\n\n"
+            f"BLOG_DARIJA:\n{blog_darija[:8000]}\n\n"
+            f"BLOG_ENGLISH:\n{blog_en[:4000]}\n\n"
+            f"LINK_URL: {link_url}\n"
+            f"BRAND: {brand}\n"
+        )
+
+        resp = await self.chat(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        )
+        text = self._extract_text(resp)
+        return self._extract_json_from_text(text)
 
     async def translate_to_darija(self, model: str, markdown: str) -> str:
         prompt = (

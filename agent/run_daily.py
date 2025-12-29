@@ -14,6 +14,7 @@ from fpdf import FPDF
 
 from agent.ai_client import HackClubAIClient
 from agent.config import load_config
+from agent.linkedin_templates import LINKEDIN_TEMPLATES_TEXT
 from agent.s3_store import S3Store
 from agent import db
 from agent import thn
@@ -112,6 +113,20 @@ def _extract_txt_codeblocks(text: str) -> List[str]:
     return out
 
 
+def _build_blog_url(base_url: str, path_template: str, yyyy_mm_dd: str, slug: str) -> str:
+    base = (base_url or "").rstrip("/")
+    if not base:
+        return ""
+
+    yyyy, mm, dd = (yyyy_mm_dd.split("-") + ["", "", ""])[:3]
+    path = (path_template or "/posts/{slug}").strip() or "/posts/{slug}"
+    path = path.replace("{slug}", slug)
+    path = path.replace("{yyyy}", yyyy).replace("{mm}", mm).replace("{dd}", dd)
+    if not path.startswith("/"):
+        path = "/" + path
+    return base + path
+
+
 async def run_once() -> int:
     _configure_logging()
     cfg = load_config()
@@ -149,6 +164,7 @@ async def run_once() -> int:
     processed = 0
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     base_out = Path(cfg.output_dir) / today
+    linkedin_candidates: List[Dict[str, Any]] = []
 
     try:
         t0 = time.monotonic()
@@ -195,6 +211,19 @@ async def run_once() -> int:
                 blog_darija = await ai.translate_to_darija(cfg.darija_model, blog_en)
                 _write_text(out_dir / "blog_darija.md", blog_darija)
                 logger.info("darija_translated url=%s chars=%s", url, len(blog_darija))
+
+                blog_url = _build_blog_url(cfg.blog_site_base_url, cfg.blog_site_post_url_template, today, slug) or url
+                linkedin_candidates.append(
+                    {
+                        "title": title or "",
+                        "source_url": url,
+                        "slug": slug,
+                        "blog_url": blog_url,
+                        "summary": source.get("description") or item.get("description") or "",
+                        "tags": item.get("tags") or "",
+                        "out_dir": str(out_dir),
+                    }
+                )
 
                 logger.info("running generate_manga_prompts model=%s", cfg.prompts_model)
                 manga_prompts_raw = await ai.generate_manga_prompts(cfg.prompts_model, blog_darija)
@@ -285,6 +314,106 @@ async def run_once() -> int:
             except Exception as e:
                 db.mark_failed(conn, url, str(e))
                 logger.exception("process_failed url=%s", url)
+
+        if cfg.linkedin_enable:
+            li_dir = base_out / "_linkedin"
+            li_json_path = li_dir / "linkedin_draft.json"
+            if li_json_path.exists():
+                logger.info("skip_linkedin_draft reason=already_exists path=%s", str(li_json_path))
+            elif not linkedin_candidates:
+                logger.info("skip_linkedin_draft reason=no_candidates")
+            else:
+                logger.info("running linkedin_pick_best model=%s candidates=%s", cfg.linkedin_model, len(linkedin_candidates))
+
+                ai_candidates = [
+                    {
+                        "title": c.get("title"),
+                        "source_url": c.get("source_url"),
+                        "blog_url": c.get("blog_url"),
+                        "summary": c.get("summary"),
+                        "tags": c.get("tags"),
+                    }
+                    for c in linkedin_candidates
+                ]
+
+                pick = await ai.pick_best_article_for_linkedin(cfg.linkedin_model, ai_candidates)
+                try:
+                    selected_index = int(pick.get("selected_index", 0))
+                except Exception:
+                    selected_index = 0
+                if selected_index < 0 or selected_index >= len(linkedin_candidates):
+                    selected_index = 0
+                selected = linkedin_candidates[selected_index]
+
+                sel_dir = Path(str(selected.get("out_dir")))
+                blog_darija_full = (sel_dir / "blog_darija.md").read_text(encoding="utf-8")
+                blog_en_full = (sel_dir / "blog_en.md").read_text(encoding="utf-8")
+
+                logger.info("running linkedin_pick_template model=%s", cfg.linkedin_model)
+                template_pick = await ai.pick_linkedin_template(cfg.linkedin_model, blog_darija_full, LINKEDIN_TEMPLATES_TEXT)
+                try:
+                    template_number = int(template_pick.get("template_number", 2))
+                except Exception:
+                    template_number = 2
+                if template_number < 1 or template_number > 9:
+                    template_number = 2
+
+                logger.info("running linkedin_generate_draft model=%s template=%s", cfg.linkedin_model, template_number)
+                draft = await ai.generate_linkedin_draft(
+                    model=cfg.linkedin_model,
+                    blog_darija=blog_darija_full,
+                    blog_en=blog_en_full,
+                    template_number=template_number,
+                    templates_text=LINKEDIN_TEMPLATES_TEXT,
+                    link_url=str(selected.get("blog_url") or selected.get("source_url") or ""),
+                    brand=cfg.linkedin_brand,
+                )
+
+                post_text = str(draft.get("post_text") or "").strip()
+                first_comment = str(draft.get("first_comment") or "").strip()
+                if not first_comment:
+                    link_url = str(selected.get("blog_url") or selected.get("source_url") or "").strip()
+                    first_comment = f"{link_url}\n{cfg.linkedin_brand}".strip()
+
+                hashtags = draft.get("hashtags")
+                if not isinstance(hashtags, list):
+                    hashtags = []
+
+                li_dir.mkdir(parents=True, exist_ok=True)
+                out_json = {
+                    "dry_run": bool(cfg.linkedin_dry_run),
+                    "generated_at": int(time.time()),
+                    "selected_index": selected_index,
+                    "selected": {
+                        "title": selected.get("title"),
+                        "source_url": selected.get("source_url"),
+                        "blog_url": selected.get("blog_url"),
+                        "slug": selected.get("slug"),
+                    },
+                    "selection": pick,
+                    "template": template_pick,
+                    "draft": {
+                        "chosen_template_number": draft.get("chosen_template_number", template_number),
+                        "post_text": post_text,
+                        "first_comment": first_comment,
+                        "hashtags": hashtags,
+                    },
+                }
+
+                _write_text(li_dir / "linkedin_templates.md", LINKEDIN_TEMPLATES_TEXT)
+                _write_text(li_dir / "linkedin_draft.json", json.dumps(out_json, ensure_ascii=False, indent=2))
+
+                md = post_text
+                if hashtags:
+                    md = md + "\n\n" + " ".join([f"#{h.lstrip('#').strip()}" for h in hashtags if isinstance(h, str) and h.strip()])
+                md = md + "\n\n---\n\nFIRST COMMENT:\n" + first_comment + "\n"
+                _write_text(li_dir / "linkedin_draft.md", md)
+
+                li_prefix = f"{today}/_linkedin"
+                store.put_text(f"{li_prefix}/linkedin_templates.md", LINKEDIN_TEMPLATES_TEXT, "text/markdown; charset=utf-8")
+                store.put_text(f"{li_prefix}/linkedin_draft.json", json.dumps(out_json, ensure_ascii=False, indent=2), "application/json")
+                store.put_text(f"{li_prefix}/linkedin_draft.md", md, "text/markdown; charset=utf-8")
+                logger.info("linkedin_draft_done dry_run=%s", cfg.linkedin_dry_run)
 
         logger.info("agent_done processed=%s", processed)
         return processed

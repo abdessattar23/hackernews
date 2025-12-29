@@ -14,6 +14,14 @@ class Config:
     s3_bucket: str
     s3_prefix: str
 
+    blog_site_base_url: str
+    blog_site_post_url_template: str
+
+    linkedin_enable: bool
+    linkedin_dry_run: bool
+    linkedin_model: str
+    linkedin_brand: str
+
     db_path: str
     output_dir: str
 
@@ -31,6 +39,14 @@ def load_config() -> Config:
 
     s3_bucket = os.environ.get("S3_BUCKET", "")
     s3_prefix = os.environ.get("S3_PREFIX", "hn-generated").strip("/")
+
+    blog_site_base_url = os.environ.get("BLOG_SITE_BASE_URL", "").rstrip("/")
+    blog_site_post_url_template = os.environ.get("BLOG_SITE_POST_URL_TEMPLATE", "/posts/{slug}")
+
+    linkedin_enable = (os.environ.get("LINKEDIN_ENABLE", "0").strip().lower() in {"1", "true", "yes", "y"})
+    linkedin_dry_run = (os.environ.get("LINKEDIN_DRY_RUN", "1").strip().lower() in {"1", "true", "yes", "y"})
+    linkedin_model = os.environ.get("LINKEDIN_MODEL", darija_model)
+    linkedin_brand = os.environ.get("LINKEDIN_BRAND", "The Hacker News B'Darija")
 
     db_path = os.environ.get("DB_PATH", "agent_state.sqlite")
     output_dir = os.environ.get("OUTPUT_DIR", "agent_output")
@@ -50,6 +66,12 @@ def load_config() -> Config:
         image_model=image_model,
         s3_bucket=s3_bucket,
         s3_prefix=s3_prefix,
+        blog_site_base_url=blog_site_base_url,
+        blog_site_post_url_template=blog_site_post_url_template,
+        linkedin_enable=linkedin_enable,
+        linkedin_dry_run=linkedin_dry_run,
+        linkedin_model=linkedin_model,
+        linkedin_brand=linkedin_brand,
         db_path=db_path,
         output_dir=output_dir,
         max_items=max_items,
