@@ -7,9 +7,10 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
+from fpdf import FPDF
 
 from agent.ai_client import HackClubAIClient
 from agent.config import load_config
@@ -98,6 +99,19 @@ async def _fetch_source_bundle(client: httpx.AsyncClient, item: Dict[str, Any]) 
     return bundle
 
 
+def _extract_txt_codeblocks(text: str) -> List[str]:
+    if not text:
+        return []
+    blocks = re.findall(r"```(?:txt|text)\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
+    out: List[str] = []
+    for b in blocks:
+        b = (b or "").strip()
+        if not b:
+            continue
+        out.append(b)
+    return out
+
+
 async def run_once() -> int:
     _configure_logging()
     cfg = load_config()
@@ -107,7 +121,7 @@ async def run_once() -> int:
         raise RuntimeError("Missing S3_BUCKET")
 
     logger.info(
-        "agent_start s3_bucket=%s s3_prefix=%s output_dir=%s db_path=%s max_items=%s blog_model=%s darija_model=%s image_model=%s",
+        "agent_start s3_bucket=%s s3_prefix=%s output_dir=%s db_path=%s max_items=%s blog_model=%s darija_model=%s prompts_model=%s image_model=%s",
         cfg.s3_bucket,
         cfg.s3_prefix,
         cfg.output_dir,
@@ -115,6 +129,7 @@ async def run_once() -> int:
         cfg.max_items,
         cfg.blog_model,
         cfg.darija_model,
+        cfg.prompts_model,
         cfg.image_model,
     )
 
@@ -181,19 +196,46 @@ async def run_once() -> int:
                 _write_text(out_dir / "blog_darija.md", blog_darija)
                 logger.info("darija_translated url=%s chars=%s", url, len(blog_darija))
 
-                img_prompt = (
-                    "Create an editorial-style illustration for this Moroccan Darija cybersecurity blog post. "
-                    "No text in the image. Modern, clean style.\n\n"
-                    f"DARJA_POST:\n{blog_darija[:4000]}\n"
-                )
+                logger.info("running generate_manga_prompts model=%s", cfg.prompts_model)
+                manga_prompts_raw = await ai.generate_manga_prompts(cfg.prompts_model, blog_darija)
+                _write_text(out_dir / "manga_prompts.md", manga_prompts_raw)
 
-                logger.info("running generate_illustration model=%s", cfg.image_model)
-                image_bytes, image_caption = await ai.generate_illustration(cfg.image_model, img_prompt, aspect_ratio="16:9")
-                if image_bytes:
-                    _write_bytes(out_dir / "illustration.png", image_bytes)
-                    logger.info("image_generated url=%s bytes=%s", url, len(image_bytes))
-                else:
-                    logger.warning("image_missing url=%s", url)
+                prompts = _extract_txt_codeblocks(manga_prompts_raw)
+                if len(prompts) < 4:
+                    logger.warning("manga_prompts_incomplete found=%s", len(prompts))
+                    logger.info("running generate_manga_prompts_retry model=%s", cfg.prompts_model)
+                    manga_prompts_raw = await ai.generate_manga_prompts(cfg.prompts_model, blog_darija)
+                    _write_text(out_dir / "manga_prompts_retry.md", manga_prompts_raw)
+                    _write_text(out_dir / "manga_prompts.md", manga_prompts_raw)
+                    prompts = _extract_txt_codeblocks(manga_prompts_raw)
+
+                if len(prompts) < 4:
+                    raise RuntimeError(f"Expected 4 manga prompts, got {len(prompts)}")
+
+                page_images: List[bytes] = []
+                page_captions: List[str] = []
+                for i, p in enumerate(prompts[:4], start=1):
+                    logger.info("running generate_manga_image page=%s model=%s", i, cfg.image_model)
+                    img_bytes, caption = await ai.generate_illustration(cfg.image_model, p, aspect_ratio="3:4")
+                    if not img_bytes:
+                        raise RuntimeError(f"Image generation returned no bytes for page {i}")
+                    page_images.append(img_bytes)
+                    page_captions.append(caption or "")
+                    _write_bytes(out_dir / f"manga_page_{i}.png", img_bytes)
+                    logger.info("manga_image_generated page=%s bytes=%s", i, len(img_bytes))
+
+                pdf_path = out_dir / "manga_pages.pdf"
+                pdf = FPDF(unit="mm", format="A4")
+                pdf.set_margins(0, 0, 0)
+                pdf.set_auto_page_break(auto=False)
+                for i in range(1, 5):
+                    pdf.add_page()
+                    img_path = out_dir / f"manga_page_{i}.png"
+                    pdf.image(str(img_path), x=0, y=0, w=pdf.w, h=pdf.h)
+                pdf.output(str(pdf_path))
+
+                pdf_bytes = pdf_path.read_bytes()
+                logger.info("manga_pdf_created bytes=%s", len(pdf_bytes))
 
                 meta = {
                     "source_url": url,
@@ -201,9 +243,10 @@ async def run_once() -> int:
                     "models": {
                         "blog_model": cfg.blog_model,
                         "darija_model": cfg.darija_model,
+                        "prompts_model": cfg.prompts_model,
                         "image_model": cfg.image_model,
                     },
-                    "image_caption": image_caption,
+                    "manga_page_captions": page_captions,
                 }
                 _write_text(out_dir / "meta.json", json.dumps(meta, ensure_ascii=False, indent=2))
 
@@ -216,20 +259,23 @@ async def run_once() -> int:
                 )
                 k2 = store.put_text(f"{s3_prefix}/blog_en.md", blog_en, "text/markdown; charset=utf-8")
                 k3 = store.put_text(f"{s3_prefix}/blog_darija.md", blog_darija, "text/markdown; charset=utf-8")
+                k_prompts = store.put_text(f"{s3_prefix}/manga_prompts.md", manga_prompts_raw, "text/markdown; charset=utf-8")
                 k4 = store.put_text(
                     f"{s3_prefix}/meta.json",
                     json.dumps(meta, ensure_ascii=False, indent=2),
                     "application/json",
                 )
-                if image_bytes:
-                    k5 = store.put_bytes(f"{s3_prefix}/illustration.png", image_bytes, "image/png")
-                else:
-                    k5 = None
+
+                img_keys: List[str] = []
+                for i, img_bytes in enumerate(page_images, start=1):
+                    img_keys.append(store.put_bytes(f"{s3_prefix}/manga_page_{i}.png", img_bytes, "image/png"))
+
+                k_pdf = store.put_bytes(f"{s3_prefix}/manga_pages.pdf", pdf_bytes, "application/pdf")
 
                 logger.info(
                     "s3_uploaded url=%s keys=%s",
                     url,
-                    [k for k in [k1, k2, k3, k4, k5] if k],
+                    [k for k in [k1, k2, k3, k_prompts, k4, k_pdf, *img_keys] if k],
                 )
 
                 db.mark_completed(conn, url, s3_prefix)

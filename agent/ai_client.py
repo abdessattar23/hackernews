@@ -154,6 +154,55 @@ class HackClubAIClient:
         )
         return self._extract_text(resp).strip()
 
+    async def generate_manga_prompts(self, model: str, blog_text: str) -> str:
+        prompt = (
+            "You are a creative prompt engineer for manga/anime image generation.\n\n"
+            "Task: Convert a news blog article into 4 fully independent, colored manga image-generation prompts. "
+            "Each prompt corresponds to a manga page depicting the incident in a funny, exaggerated, manga/anime style, "
+            "with dialogue in Moroccan Darija.\n\n"
+            "Instructions:\n\n"
+            "1. Read the blog article carefully.\n"
+            "2. Generate 4 independent prompts (Page 1–4), each standalone:\n"
+            "   - Scene description:\n"
+            "     - Background\n"
+            "     - Characters (appearance, emotions, poses)\n"
+            "     - Key objects/metaphors (coins, malware, mnemonics, warning symbols)\n"
+            "     - Actions/comic exaggeration\n"
+            "   - Dialogue in Moroccan Darija:\n"
+            "     - Maximum 2 text blocks per page in Darija\n"
+            "     - English text allowed for names, logos, numbers, or technical terms\n"
+            "   - Visual style:\n"
+            "     - Manga/anime cyberpunk\n"
+            "     - Colored illustration\n"
+            "     - Strong black ink lines, sketchy/gritty textures\n"
+            "     - Color palette: dominant + accent colors (red for danger, neon for data, etc.)\n"
+            "     - Lighting, cinematic framing, focus\n"
+            "3. Main character rules:\n"
+            "   - If male, always wearing sportif outfit of MAS (Maghreb Association of Sport) of Fez\n"
+            "   - Maintain exaggerated facial expressions and gestures for humor\n"
+            "4. Each prompt must be self-contained; can be generated independently.\n"
+            "5. Output format: each prompt must be inside a fenced code block with language txt.\n\n"
+            "Page 1 Prompt:\n```txt\n...\n```\n"
+            "Page 2 Prompt:\n```txt\n...\n```\n"
+            "Page 3 Prompt:\n```txt\n...\n```\n"
+            "Page 4 Prompt:\n```txt\n...\n```\n\n"
+            "Requirements:\n\n"
+            "- Use metaphors for technical details: mnemonics, crypto theft, malware, backdoor, etc.\n"
+            "- Exaggerated expressions, humorous tone, but story clearly reflects the news incident.\n"
+            "- Colored manga only, no black-and-white.\n"
+            "- Ultra-detailed, cinematic composition, poster-quality illustration.\n\n"
+            "Input blog text:\n"
+            f"{blog_text}\n"
+        )
+
+        resp = await self.chat(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        )
+        return self._extract_text(resp).strip()
+
     async def generate_illustration(self, model: str, prompt: str, aspect_ratio: str = "16:9") -> Tuple[Optional[bytes], str]:
         resp = await self.chat(
             {

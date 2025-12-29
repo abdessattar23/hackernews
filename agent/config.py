@@ -8,6 +8,7 @@ class Config:
     ai_api_key: str
     blog_model: str
     darija_model: str
+    prompts_model: str
     image_model: str
 
     s3_bucket: str
@@ -25,6 +26,7 @@ def load_config() -> Config:
 
     blog_model = os.environ.get("BLOG_MODEL", "qwen/qwen3-32b")
     darija_model = os.environ.get("DARIJA_MODEL", blog_model)
+    prompts_model = os.environ.get("PROMPTS_MODEL", darija_model)
     image_model = os.environ.get("IMAGE_MODEL", "google/gemini-2.5-flash-image-preview")
 
     s3_bucket = os.environ.get("S3_BUCKET", "")
@@ -44,6 +46,7 @@ def load_config() -> Config:
         ai_api_key=ai_api_key,
         blog_model=blog_model,
         darija_model=darija_model,
+        prompts_model=prompts_model,
         image_model=image_model,
         s3_bucket=s3_bucket,
         s3_prefix=s3_prefix,
