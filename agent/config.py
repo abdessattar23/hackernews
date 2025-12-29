@@ -19,6 +19,7 @@ class Config:
 
     linkedin_enable: bool
     linkedin_dry_run: bool
+    linkedin_force: bool
     linkedin_model: str
     linkedin_brand: str
 
@@ -45,6 +46,7 @@ def load_config() -> Config:
 
     linkedin_enable = (os.environ.get("LINKEDIN_ENABLE", "0").strip().lower() in {"1", "true", "yes", "y"})
     linkedin_dry_run = (os.environ.get("LINKEDIN_DRY_RUN", "1").strip().lower() in {"1", "true", "yes", "y"})
+    linkedin_force = (os.environ.get("LINKEDIN_FORCE", "0").strip().lower() in {"1", "true", "yes", "y"})
     linkedin_model = os.environ.get("LINKEDIN_MODEL", darija_model)
     linkedin_brand = os.environ.get("LINKEDIN_BRAND", "The Hacker News B'Darija")
 
@@ -70,6 +72,7 @@ def load_config() -> Config:
         blog_site_post_url_template=blog_site_post_url_template,
         linkedin_enable=linkedin_enable,
         linkedin_dry_run=linkedin_dry_run,
+        linkedin_force=linkedin_force,
         linkedin_model=linkedin_model,
         linkedin_brand=linkedin_brand,
         db_path=db_path,
